@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: MIT
+
+use std::collections::HashMap;
+
+use chrono::{DateTime, Duration, Utc};
+use rand::seq::SliceRandom;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use solana_program::{
+    account_info::{next_account_info, AccountInfo},
+    entrypoint,
+    entrypoint::ProgramResult,
+    msg,
+    program::{invoke, invoke_signed},
+    program_error::ProgramError,
+    pubkey::Pubkey,
+    rent::Rent,
+    system_instruction::{create_account, transfer},
+    sysvar::{rent::Rent as RentSysvar, Sysvar},
+};
+use solana_program::program_pack::{IsInitialized, Pack, Sealed};
+use solana_program::program_option::COption;
+use solana_sdk::{
+    signature::{Keypair, Signer},
+    transaction::{Transaction, TransactionInstruction},
+    transport::TransportError,
+    account::Account,
+    pubkey::Pubkey as SolanaPubkey,
+};
+use solana_program::msg as solana_msg;
+
+const MAX_TOKENS: u16 = 10000;
+const MAX_LEASE_TIME: i64 = 365 * 24 * 60 * 60;
+const MIN_LEASE_TIME: i64 = 30 * 24 * 60 * 60;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum Category {
+    Land,
+    Building,
+    Vehicle,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Lease {
+    pub lessee: SolanaPubkey,
+    pub end_time: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Auction {
+    pub seller: SolanaPubkey,
+    pub end_time: i64,
+    pub winner: COption<SolanaPubkey>,
+    pub highest_bid: u64,
+}
+
+impl Sealed for Lease {}
+impl Sealed for Auction {}
+impl IsInitialized for Lease {
+    fn is_initialized(&self) -> bool {
+        self.lessee != SolanaPubkey::default()
+    }
+}
+impl IsInitialized for Auction {
+    fn is_initialized(&self) -> bool {
+        self.seller != SolanaPubkey::default()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Token {
+    pub id: u16,
+    pub category: Category,
+    pub owner: SolanaPubkey,
+    pub lease: Lease,
+    pub auction: Auction,
+}
+
+impl Sealed for Token {}
+impl IsInitialized for Token {
+    fn is_initialized(&self) -> bool {
+        self.id != 0
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct MyToken {
+    pub tokens: HashMap<u16, Token>,
+    pub token_ids: u16,
+}
+
+impl Sealed for MyToken {}
+impl IsInitialized for MyToken {
+    fn is_initialized(&self) -> bool {
+        self.token_ids != 0
+    }
+}
+
+impl MyToken {
+    pub fn new() -> Self {
+        Self {
+            tokens: HashMap::new(),
+            token_ids: 0,
+        }
+    }
+
+    pub fn mint(&mut self, category: Category, token_uri: String) -> Result<u16, ProgramError> {
+        if self.token_ids == MAX_TOKENS {
+            return Err(ProgramError::InvalidArgument);
+        }
+
+        let id = self.token_ids + 1;
+        self.token_ids = id;
+
+        let mut hasher = Sha256::new();
+        hasher.update(token_uri.as_bytes());
+        let hash = hasher.finalize();
+        let uri = format!("ipfs://{}", hex
